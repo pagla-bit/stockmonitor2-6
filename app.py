@@ -140,9 +140,14 @@ with col1:
 
 with col2:
     st.subheader("📈 SPY")
-    if not spy_hist.empty:
-        spy_change = (spy_hist['Close'].iloc[-1] - spy_hist['Close'].iloc[-2]) / spy_hist['Close'].iloc[-2] * 100
-        st.metric("SPY", f"${spy_hist['Close'].iloc[-1]:.2f}", f"{spy_change:+.2f}%")
+    if not spy_hist.empty and len(spy_hist) >= 2:
+        try:
+            spy_change = (spy_hist['Close'].iloc[-1] - spy_hist['Close'].iloc[-2]) / spy_hist['Close'].iloc[-2] * 100
+            st.metric("SPY", f"${spy_hist['Close'].iloc[-1]:.2f}", f"{spy_change:+.2f}%")
+        except:
+            st.metric("SPY", "Data unavailable")
+    else:
+        st.metric("SPY", "Data unavailable")
 
 with col3:
     st.subheader("📍 Select Stock")
