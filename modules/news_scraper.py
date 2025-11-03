@@ -155,13 +155,81 @@ def scrape_google_news(ticker: str, max_news: int = 10):
 @st.cache_data(ttl=1800)  # Cache for 30 minutes
 def scrape_yahoo_news(ticker: str, max_news: int = 10):
     """
-    Scrape latest news from Yahoo Finance
+    Scrape latest news from Yahoo Finance using RSS feed
     Returns: List of dicts with {date, time, title, link, source}
     """
     try:
-        url = f"https://finance.yahoo.com/quote/{ticker.upper()}/news"
+        # Use Yahoo Finance RSS feed - more reliable than scraping HTML
+        rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker.upper()}&region=US&lang=en-US"
+        
+        if not FEEDPARSER_AVAILABLE:
+            st.warning("feedparser not installed. Run: pip install feedparser --break-system-packages")
+            return []
+        
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(rss_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        # Parse RSS feed
+        feed = feedparser.parse(response.content)
+        
+        if not feed.entries:
+            # Try alternative approach: Yahoo Finance news page scraping
+            return scrape_yahoo_news_html(ticker, max_news)
+        
+        news_list = []
+        
+        for entry in feed.entries[:max_news]:
+            try:
+                # Parse timestamp
+                published = entry.get('published_parsed', None)
+                if published:
+                    dt = datetime(*published[:6])
+                    date_str = dt.strftime('%b-%d-%y')
+                    time_str = dt.strftime('%I:%M%p')
+                else:
+                    date_str = 'Today'
+                    time_str = 'N/A'
+                
+                # Extract info
+                title = entry.get('title', 'No title')
+                link = entry.get('link', '#')
+                
+                # Extract source if available
+                source = 'Yahoo Finance'
+                if hasattr(entry, 'source') and hasattr(entry.source, 'title'):
+                    source = entry.source.title
+                
+                news_list.append({
+                    'Date': date_str,
+                    'Time': time_str,
+                    'Source': source,
+                    'Title': title,
+                    'Link': link
+                })
+            except Exception:
+                continue
+        
+        return news_list if news_list else scrape_yahoo_news_html(ticker, max_news)
+    
+    except Exception as e:
+        # Fallback to HTML scraping
+        return scrape_yahoo_news_html(ticker, max_news)
+
+
+def scrape_yahoo_news_html(ticker: str, max_news: int = 10):
+    """
+    Fallback: Scrape Yahoo Finance news from HTML page
+    Returns: List of dicts with {date, time, title, link, source}
+    """
+    try:
+        # Try the quote news URL
+        url = f"https://finance.yahoo.com/quote/{ticker.upper()}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         
         response = requests.get(url, headers=headers, timeout=10)
@@ -169,17 +237,25 @@ def scrape_yahoo_news(ticker: str, max_news: int = 10):
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Yahoo Finance uses various container classes for news
-        news_items = soup.find_all('li', {'class': lambda x: x and 'stream-item' in x})
-        
-        if not news_items:
-            # Try alternative selector
-            news_items = soup.find_all('div', {'class': lambda x: x and 'Ov(h)' in x})
-        
-        if not news_items:
-            return []
-        
         news_list = []
+        
+        # Try multiple selectors as Yahoo changes their structure frequently
+        selectors = [
+            'div[data-test="news-stream"] li',
+            'div.Pos\\(r\\) li',
+            'div[class*="stream"] li',
+            'section[data-test="quote-news"] li'
+        ]
+        
+        news_items = []
+        for selector in selectors:
+            news_items = soup.select(selector)
+            if news_items:
+                break
+        
+        if not news_items:
+            st.info("💡 No recent news available from Yahoo Finance for this ticker. Try switching to Finviz or Google News.")
+            return []
         
         for item in news_items[:max_news]:
             try:
@@ -195,41 +271,42 @@ def scrape_yahoo_news(ticker: str, max_news: int = 10):
                 if link and not link.startswith('http'):
                     link = 'https://finance.yahoo.com' + link
                 
-                # Find timestamp (usually in a time tag or span)
+                # Find timestamp
                 time_tag = item.find('time')
                 if time_tag:
                     timestamp_text = time_tag.get_text().strip()
                 else:
-                    time_span = item.find('span', {'class': lambda x: x and 'C(#959595)' in x})
-                    timestamp_text = time_span.get_text().strip() if time_span else 'Today'
+                    timestamp_text = 'Today'
                 
                 # Parse timestamp
+                date_str = 'Today'
+                time_str = ''
                 if '•' in timestamp_text:
                     parts = timestamp_text.split('•')
-                    date_str = parts[0].strip() if len(parts) > 0 else 'Today'
-                    time_str = parts[1].strip() if len(parts) > 1 else ''
+                    if len(parts) >= 2:
+                        source = parts[0].strip()
+                        time_str = parts[1].strip()
                 else:
-                    date_str = timestamp_text
-                    time_str = ''
-                
-                # Find source (if available)
-                source_tag = item.find('div', {'class': lambda x: x and 'C(#959595)' in x})
-                source = source_tag.get_text().strip() if source_tag else 'Yahoo Finance'
+                    source = 'Yahoo Finance'
+                    time_str = timestamp_text
                 
                 news_list.append({
                     'Date': date_str,
                     'Time': time_str,
-                    'Source': source,
+                    'Source': source if 'source' in locals() else 'Yahoo Finance',
                     'Title': title,
                     'Link': link
                 })
-            except Exception as inner_e:
+            except Exception:
                 continue
+        
+        if not news_list:
+            st.info("💡 No recent news available from Yahoo Finance for this ticker. Try switching to Finviz or Google News.")
         
         return news_list
     
     except Exception as e:
-        st.warning(f"Could not fetch Yahoo Finance news for {ticker}: {str(e)[:100]}")
+        st.warning(f"Could not fetch Yahoo Finance news for {ticker}. This could be due to network issues or AAPL not being covered. Try Finviz or Google News instead.")
         return []
 
 
